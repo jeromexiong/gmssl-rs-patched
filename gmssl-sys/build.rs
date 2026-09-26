@@ -106,6 +106,16 @@ fn main() {
         }
     }
 
+    // Windows MSVC: GmSSL's dylib.h / socket.h gate their Windows code on
+    // `#ifdef WIN32`, but MSVC only predefines `_WIN32`. CMake's Windows-MSVC
+    // platform module normally injects /DWIN32 into the compile line, yet the
+    // `cmake` crate overwrites CMAKE_C_FLAGS / CMAKE_C_FLAGS_RELEASE and drops
+    // it, so those translation units would try to #include <dlfcn.h> /
+    // <netdb.h> (POSIX-only) and fail with C1083.
+    if env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
+        cmake_cfg.cflag("-DWIN32");
+    }
+
     // Arbitrary extra CMake -D flags.
     if let Ok(extra) = env::var("GMSSL_CMAKE_DEFINES") {
         for def in extra.split_whitespace() {
@@ -115,18 +125,28 @@ fn main() {
         }
     }
 
+    // Windows MSVC: GmSSL hardcodes CMAKE_INSTALL_PREFIX to
+    // "C:/Program Files/GmSSL" in its CMakeLists.txt, which overrides the
+    // value passed on the command line. Patch it out so the library is
+    // installed into OUT_DIR, then restore the file below.
+    if env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
+        patch_cmake_install_prefix(&source_dir);
+    }
+
     let dst = cmake_cfg.build();
+
+    // Restore the CMakeLists.txt patched above.
+    if env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
+        restore_cmake_lists(&source_dir);
+    }
 
     // ========================================================================
     // 5. Emit link directives
     // ========================================================================
-    let lib_dir = dst.join("lib");
-    assert!(
-        lib_dir.exists(),
-        "CMake build completed but no lib/ directory found at {}. \
-         Check the GmSSL CMake output above for errors.",
-        lib_dir.display()
-    );
+    // MSVC multi-config generators (Visual Studio) install libraries into
+    // lib/<Config>/ (e.g. lib/Release/gmssl.lib); single-config generators
+    // (Makefiles, Ninja) put them directly in lib/.
+    let lib_dir = find_lib_dir(&dst);
 
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=static=gmssl");
@@ -142,6 +162,7 @@ fn main() {
     }
     // Windows: system crypto libs used by GmSSL
     if env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
+        println!("cargo:rustc-link-lib=advapi32");
         println!("cargo:rustc-link-lib=bcrypt");
         println!("cargo:rustc-link-lib=ncrypt");
     }
@@ -149,6 +170,72 @@ fn main() {
     println!("cargo:rerun-if-env-changed=GMSSL_DIR");
     println!("cargo:rerun-if-env-changed=GMSSL_CMAKE_DEFINES");
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+/// On Windows MSVC, GmSSL's CMakeLists.txt hardcodes
+/// `set(CMAKE_INSTALL_PREFIX "C:/Program Files/GmSSL")` which overrides the
+/// value passed via `-D`. Patch it out for the duration of the build and
+/// restore the original afterwards.
+fn patch_cmake_install_prefix(source_dir: &PathBuf) {
+    let cmake_lists = source_dir.join("CMakeLists.txt");
+    let original = std::fs::read_to_string(&cmake_lists).unwrap_or_else(|e| {
+        panic!("Failed to read {}: {}", cmake_lists.display(), e);
+    });
+
+    let patched = original.replace(
+        "set(CMAKE_INSTALL_PREFIX \"C:/Program Files/GmSSL\")",
+        "# PATCHED by gmssl-rs-sys build.rs — removed hardcoded install prefix\n# set(CMAKE_INSTALL_PREFIX \"C:/Program Files/GmSSL\")",
+    );
+
+    if patched != original {
+        eprintln!("Patched GmSSL CMakeLists.txt: removed hardcoded CMAKE_INSTALL_PREFIX");
+        let backup = source_dir.join("CMakeLists.txt.bak");
+        std::fs::write(&backup, &original).unwrap_or_else(|e| {
+            panic!("Failed to backup {}: {}", cmake_lists.display(), e);
+        });
+        std::fs::write(&cmake_lists, &patched).unwrap_or_else(|e| {
+            let _ = std::fs::copy(&backup, &cmake_lists);
+            panic!("Failed to write {}: {}", cmake_lists.display(), e);
+        });
+    }
+}
+
+/// Restore the original CMakeLists.txt after the build.
+fn restore_cmake_lists(source_dir: &PathBuf) {
+    let backup = source_dir.join("CMakeLists.txt.bak");
+    if backup.exists() {
+        let _ = std::fs::copy(&backup, source_dir.join("CMakeLists.txt"));
+        let _ = std::fs::remove_file(&backup);
+    }
+}
+
+/// Find the directory containing the compiled `gmssl` library.
+///
+/// MSVC multi-config generators install into lib/<Config>/ (e.g.
+/// lib/Release/gmssl.lib), while single-config generators (Makefiles, Ninja)
+/// use lib/ directly.
+fn find_lib_dir(prefix: &PathBuf) -> PathBuf {
+    // Single-config layout first (Makefiles, Ninja).
+    let lib = prefix.join("lib");
+    if lib.join("libgmssl.a").exists()
+        || lib.join("libgmssl.so").exists()
+        || lib.join("libgmssl.dylib").exists()
+        || lib.join("gmssl.lib").exists()
+    {
+        return lib;
+    }
+    // MSVC multi-config layout.
+    for config in &["Debug", "Release", "MinSizeRel", "RelWithDebInfo"] {
+        let cfg_lib = prefix.join("lib").join(config);
+        if cfg_lib.join("gmssl.lib").exists() {
+            return cfg_lib;
+        }
+    }
+    panic!(
+        "GmSSL library not found under {}/lib/. \
+         Check the CMake build output above for errors.",
+        prefix.display()
+    );
 }
 
 /// Locate the GmSSL source tree, downloading it if necessary.

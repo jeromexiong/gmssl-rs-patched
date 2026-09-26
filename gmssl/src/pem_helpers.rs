@@ -1,18 +1,19 @@
-// PEM and DER helper functions using fmemopen/open_memstream.
-//
-// These provide in-memory I/O for C functions that use FILE* pointers,
-// avoiding the need to write temporary files to disk.
+// PEM and DER helper functions for C APIs that use FILE* pointers.
 
 use crate::error::GmsslError;
-use libc::{c_char, c_int, c_void, size_t, FILE};
+#[cfg(not(windows))]
+use libc::c_char;
+use libc::{c_int, c_void, size_t, FILE};
 use std::ffi::CString;
 use std::io;
+#[cfg(not(windows))]
 use std::ptr;
 
 /// Open a FILE* from a byte buffer for reading (uses POSIX fmemopen).
 ///
 /// # Safety
 /// The caller must ensure the returned FILE* is closed via `libc::fclose`.
+#[cfg(not(windows))]
 pub(crate) unsafe fn file_from_bytes(data: &[u8]) -> Result<*mut FILE, GmsslError> {
     let mode = CString::new("rb").unwrap();
     let fp = libc::fmemopen(data.as_ptr() as *mut c_void, data.len(), mode.as_ptr());
@@ -23,12 +24,34 @@ pub(crate) unsafe fn file_from_bytes(data: &[u8]) -> Result<*mut FILE, GmsslErro
     }
 }
 
+/// Open a FILE* from a byte buffer for reading on Windows.
+///
+/// # Safety
+/// The caller must ensure the returned FILE* is closed via `libc::fclose`.
+#[cfg(windows)]
+pub(crate) unsafe fn file_from_bytes(data: &[u8]) -> Result<*mut FILE, GmsslError> {
+    let fp = libc::tmpfile();
+    if fp.is_null() {
+        return Err(GmsslError::IoError(io::Error::last_os_error()));
+    }
+
+    let written = libc::fwrite(data.as_ptr() as *const c_void, 1, data.len(), fp);
+    if written != data.len() {
+        libc::fclose(fp);
+        return Err(GmsslError::IoError(io::Error::last_os_error()));
+    }
+
+    libc::rewind(fp);
+    Ok(fp)
+}
+
 /// Execute a C function that writes PEM output to a FILE*, capturing the output.
 ///
 /// Uses POSIX `open_memstream` to capture the written data into a `Vec<u8>`.
 ///
 /// # Safety
 /// The `writer` closure is given a FILE* and must return 1 on success.
+#[cfg(not(windows))]
 pub(crate) unsafe fn collect_to_bytes<F>(writer: F) -> Result<Vec<u8>, GmsslError>
 where
     F: FnOnce(*mut FILE) -> c_int,
@@ -56,6 +79,54 @@ where
         Vec::new()
     };
     libc::free(buf as *mut c_void);
+    Ok(result)
+}
+
+/// Execute a C function that writes PEM output to a FILE*, capturing the output.
+///
+/// # Safety
+/// The `writer` closure is given a FILE* and must return 1 on success.
+#[cfg(windows)]
+pub(crate) unsafe fn collect_to_bytes<F>(writer: F) -> Result<Vec<u8>, GmsslError>
+where
+    F: FnOnce(*mut FILE) -> c_int,
+{
+    let fp = libc::tmpfile();
+    if fp.is_null() {
+        return Err(GmsslError::IoError(io::Error::last_os_error()));
+    }
+
+    let ret = writer(fp);
+    if libc::fflush(fp) != 0 {
+        libc::fclose(fp);
+        return Err(GmsslError::IoError(io::Error::last_os_error()));
+    }
+    if ret != 1 {
+        libc::fclose(fp);
+        return Err(GmsslError::LibraryError("PEM write failed"));
+    }
+
+    if libc::fseek(fp, 0, libc::SEEK_END) != 0 {
+        libc::fclose(fp);
+        return Err(GmsslError::IoError(io::Error::last_os_error()));
+    }
+    let size = libc::ftell(fp);
+    if size < 0 {
+        libc::fclose(fp);
+        return Err(GmsslError::IoError(io::Error::last_os_error()));
+    }
+
+    libc::rewind(fp);
+    let mut result = vec![0u8; size as usize];
+    if !result.is_empty() {
+        let read = libc::fread(result.as_mut_ptr() as *mut c_void, 1, result.len(), fp);
+        if read != result.len() {
+            libc::fclose(fp);
+            return Err(GmsslError::IoError(io::Error::last_os_error()));
+        }
+    }
+
+    libc::fclose(fp);
     Ok(result)
 }
 
