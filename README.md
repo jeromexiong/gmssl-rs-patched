@@ -1,5 +1,11 @@
 # gmssl-rs
 
+> ⚠️ **Patched copy** of the published `gmssl-rs` 0.1.1 + `gmssl-rs-sys` 0.1.0 sources, in
+> upstream's workspace layout, carrying the **unreleased Windows fixes** from
+> `GmSSL/gmssl-rs@main` (MSVC `WIN32` define + GmSSL install prefix + multi-config lib dir +
+> `tmpfile()` instead of POSIX `fmemopen`/`open_memstream`). GmSSL itself stays at 3.1.1 and its
+> sources ship in-tree, so builds need no download. See **[PATCH.md](PATCH.md)**.
+
 [![Crates.io](https://img.shields.io/crates/v/gmssl-rs.svg)](https://crates.io/crates/gmssl-rs)
 [![Documentation](https://docs.rs/gmssl-rs/badge.svg)](https://docs.rs/gmssl-rs)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
