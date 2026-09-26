@@ -1,0 +1,8 @@
+# 上游 GmSSL/gmssl-rs 的仓库布局：两个 crate + 一条 path 依赖。
+# 这样下游只需要一条 patch：
+#   [patch.crates-io]
+#   gmssl-rs = { git = "https://github.com/jeromexiong/gmssl-rs-patched", rev = "<sha>" }
+# gmssl-rs-sys 会作为同仓库内的 path 依赖被一起解析（不必单独 patch）。
+[workspace]
+resolver = "2"
+members = ["gmssl", "gmssl-sys"]
