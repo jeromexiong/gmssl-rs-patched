@@ -92,6 +92,10 @@ superseded by this one and can be deleted then too.
    tarball unless `GMSSL_SOURCE_DIR` is set), that stale gitlink only misleads readers.
 3. No release since 2026-05-31 ⇒ downstreams cannot get the Windows fixes without pinning git.
 
+→ All three are addressed by [`GmSSL/gmssl-rs#3`](https://github.com/GmSSL/gmssl-rs/pull/3)
+(filed 2026-10-09: GMSSL_DIR platform link libs fix, submodule removal, 0.2.0 release prep),
+pending merge and `cargo publish`. Nit 1's manifest fix already landed on upstream `main`.
+
 ## Provenance and license
 
 - Base bytes: crates.io `gmssl-rs` 0.1.1 + `gmssl-rs-sys` 0.1.0 (Apache-2.0), commit 1.
